@@ -1,0 +1,62 @@
+tasks.register('copyLibs') {
+    copyFile('librtpkcs11ecp.so', '../../../pkcs11/lib/linux_glibc-x86_64', 'src/main/resources/linux-x86-64')
+    copyFile('librtpkcs11ecp.so', '../../../pkcs11/lib/linux_glibc-x86', 'src/main/resources/linux-x86')
+    copyFile('rtpkcs11ecp.dll', '../../../pkcs11/lib/windows-x86', 'src/main/resources/win32-x86')
+    copyFile('rtpkcs11ecp.dll', '../../../pkcs11/lib/windows-x86_64', 'src/main/resources/win32-x86-64')
+    copyPkcsFromFramework()
+
+    requireFileInDirectory('src/main/resources/linux-x86-64', 'librtpkcs11ecp.so')
+    requireFileInDirectory('src/main/resources/linux-x86', 'librtpkcs11ecp.so')
+    requireFileInDirectory('src/main/resources/win32-x86', 'rtpkcs11ecp.dll')
+    requireFileInDirectory('src/main/resources/win32-x86-64', 'rtpkcs11ecp.dll')
+    requireFileInDirectory('src/main/resources/darwin', 'rtpkcs11ecp')
+}
+
+processResources.dependsOn copyLibs
+
+compileJava.options.encoding = 'UTF-8'
+
+def requireFileInDirectory(String directory, String file) {
+    if (fileTree(dir: directory, include: '**/' + file).isEmpty()) {
+        throw new Exception('Not found ' + file + ' in ' + directory + ' directory')
+    }
+}
+
+def copyFile(String file, String sourcePath, String destinationPath) {
+    try {
+        copy {
+            include file
+            from sourcePath
+            into destinationPath
+        }
+    } catch (ignored) {
+        System.println("Could not copy file: " + file)
+    }
+}
+
+def copyDirectory(String sourcePath, String destinationPath) {
+    try {
+        copy {
+            from sourcePath
+            into destinationPath
+        }
+    } catch (ignored) {
+        System.println("Could not copy directory " + sourcePath + " into directory " + destinationPath)
+    }
+}
+
+def copyPkcsFromFramework() {
+    String versionPath
+    file('../../../pkcs11/lib/macos-x86_64+arm64/rtpkcs11ecp.framework/Versions/').eachDir {
+        if (it != null && it.name != 'Current') {
+            versionPath = it.absolutePath
+            return
+        }
+    }
+
+    if (versionPath == null) {
+        throw new Exception('Cannot find path inside framework')
+    }
+
+    copyDirectory(versionPath, 'src/main/resources/darwin')
+}

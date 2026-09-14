@@ -1,0 +1,2 @@
+rootProject.name = 'JavaSamples'
+include ':pkcs11', ':sunjca', ':rtpki', ':common'

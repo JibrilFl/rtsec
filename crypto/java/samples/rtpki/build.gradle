@@ -1,0 +1,28 @@
+plugins {
+    id 'application'
+}
+
+apply from: "$rootDir/buildSrc/copy-libs.gradle"
+
+def archiveName = "rtpki-samples"
+
+setArchivesBaseName(archiveName)
+
+java {
+    sourceCompatibility JavaVersion.VERSION_1_8
+    targetCompatibility JavaVersion.VERSION_1_8
+}
+
+dependencies {
+    implementation project(':common')
+    implementation 'ru.rutoken.rtpki:rtpki-jvm:0.1.0'
+}
+
+jar {
+    // We make a "fat" jar to store module dependencies and classes in one archive
+    from {
+        configurations.compileClasspath.filter { it.exists() }.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    // We do not need any signing-related files taken from dependencies
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/*.DSA'
+}
