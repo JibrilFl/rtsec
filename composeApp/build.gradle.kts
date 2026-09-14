@@ -28,6 +28,7 @@ kotlin {
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutinesSwing)
+            implementation(libs.rutoken.pkcs11jna)
             implementation("org.xerial:sqlite-jdbc:3.45.1.0")
             implementation("com.sun.mail:jakarta.mail:2.0.1")
             implementation("org.apache.poi:poi-ooxml:5.2.5")
