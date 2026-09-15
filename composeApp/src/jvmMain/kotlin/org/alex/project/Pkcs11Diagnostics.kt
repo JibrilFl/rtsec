@@ -13,6 +13,7 @@ import ru.rutoken.pkcs11jna.Pkcs11Constants.CKA_CLASS
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKA_ID
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKA_LABEL
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKA_PRIVATE
+import ru.rutoken.pkcs11jna.Pkcs11Constants.CKA_TOKEN
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKA_VALUE
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKF_OS_LOCKING_OK
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKF_SERIAL_SESSION
@@ -22,7 +23,10 @@ import ru.rutoken.pkcs11jna.Pkcs11Constants.CKO_PRIVATE_KEY
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKO_PUBLIC_KEY
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKO_SECRET_KEY
 import ru.rutoken.pkcs11jna.Pkcs11Constants.CKU_USER
+import ru.rutoken.pkcs11jna.Pkcs11Constants.CK_FALSE
 import java.io.File
+import java.security.KeyStore
+import java.security.cert.X509Certificate
 
 /**
  * Отчёт о содержимом подключённых токенов: слоты, CK_TOKEN_INFO и все объекты PKCS#11
@@ -51,10 +55,30 @@ object Pkcs11Diagnostics {
         try {
             val slots = Pkcs11TokenScanner.slotList()
             appendLine("Слотов с носителями: ${slots.size}")
+            appendLine("Всего слотов (включая пустые считыватели): ${Pkcs11TokenScanner.slotList(CK_FALSE).size}")
             slots.forEach { slot -> appendSlot(slot, pin) }
         } finally {
             pkcs11.C_Finalize(null)
         }
+        appendLine()
+        appendWindowsStore()
+    }
+
+    /** Альтернативный источник без внешних процессов: личное хранилище сертификатов Windows. */
+    private fun StringBuilder.appendWindowsStore() {
+        appendLine("=== Хранилище Windows-MY ===")
+        val result = runCatching {
+            val store = KeyStore.getInstance("Windows-MY")
+            store.load(null, null)
+            store.aliases().toList().map { alias ->
+                val certificate = store.getCertificate(alias) as? X509Certificate
+                "$alias | ${certificate?.subjectX500Principal?.name ?: "?"} | до ${certificate?.notAfter}"
+            }
+        }
+        result.onSuccess { lines ->
+            appendLine("Сертификатов: ${lines.size}")
+            lines.forEach(::appendLine)
+        }.onFailure { appendLine("Недоступно: ${it.message}") }
     }
 
     private fun StringBuilder.appendSlot(slot: NativeLong, pin: CharArray?) {
@@ -72,6 +96,10 @@ object Pkcs11Diagnostics {
         appendLine("Серийный номер: ${text(tokenInfo.serialNumber)}")
         appendLine("Флаги: 0x${java.lang.Long.toHexString(tokenInfo.flags.toLong())}")
         appendLine("Прошивка: ${tokenInfo.firmwareVersion.major}.${tokenInfo.firmwareVersion.minor}")
+        appendLine(
+            "Память public: ${tokenInfo.ulFreePublicMemory}/${tokenInfo.ulTotalPublicMemory}, " +
+                "private: ${tokenInfo.ulFreePrivateMemory}/${tokenInfo.ulTotalPrivateMemory}"
+        )
 
         val sessionPointer = NativeLongByReference()
         Pkcs11TokenScanner.checkRv(
@@ -82,6 +110,7 @@ object Pkcs11Diagnostics {
         try {
             appendLine("-- объекты без авторизации --")
             appendObjects(session)
+            appendClassCounts(session)
             if (pin == null) {
                 appendLine("-- PIN не вводился, приватные объекты не видны --")
                 return
@@ -95,6 +124,7 @@ object Pkcs11Diagnostics {
             }
             appendLine("-- объекты после ввода PIN --")
             appendObjects(session)
+            appendClassCounts(session)
             pkcs11.C_Logout(session)
         } finally {
             pkcs11.C_CloseSession(session)
@@ -121,9 +151,24 @@ object Pkcs11Diagnostics {
         }
     }
 
+    /** Поиск с явным шаблоном: некоторые реализации иначе отвечают на пустой шаблон. */
     @Suppress("UNCHECKED_CAST")
-    private fun findAllObjects(session: NativeLong): List<NativeLong> {
-        Pkcs11TokenScanner.checkRv("C_FindObjectsInit", pkcs11.C_FindObjectsInit(session, null, NativeLong(0)))
+    private fun StringBuilder.appendClassCounts(session: NativeLong) {
+        val byToken = CK_ATTRIBUTE().toArray(1) as Array<CK_ATTRIBUTE>
+        byToken[0].setAttr(CKA_TOKEN, true)
+        appendLine("поиск CKA_TOKEN=true: ${findObjects(session, byToken).size}")
+        CLASS_NAMES.forEach { (objectClass, name) ->
+            val template = CK_ATTRIBUTE().toArray(1) as Array<CK_ATTRIBUTE>
+            template[0].setAttr(CKA_CLASS, objectClass)
+            appendLine("поиск $name: ${findObjects(session, template).size}")
+        }
+    }
+
+    private fun findAllObjects(session: NativeLong): List<NativeLong> = findObjects(session, null)
+
+    private fun findObjects(session: NativeLong, template: Array<CK_ATTRIBUTE>?): List<NativeLong> {
+        val count = NativeLong((template?.size ?: 0).toLong())
+        Pkcs11TokenScanner.checkRv("C_FindObjectsInit", pkcs11.C_FindObjectsInit(session, template, count))
         try {
             val found = Array(MAX_OBJECTS) { NativeLong(0) }
             val foundCount = NativeLongByReference()
