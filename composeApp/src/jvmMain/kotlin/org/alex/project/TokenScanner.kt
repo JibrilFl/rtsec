@@ -1,203 +1,71 @@
 package org.alex.project
 
-
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.foundation.shape.CutCornerShape
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.datetime.LocalDateTime
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toLocalDateTime
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
-import kotlin.time.Clock
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CutCornerShape
-import androidx.compose.material3.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
-import java.io.ByteArrayInputStream
-import java.io.File
-import java.security.KeyStore
-import java.security.Security
-import java.security.cert.X509Certificate
-import java.text.SimpleDateFormat
-import javax.naming.ldap.LdapName
 
+enum class ScanSource(val title: String) {
+    PKCS11("PKCS#11 (rtpkcs11ecp)"),
+    CRYPTO_PRO("КриптоПро CSP (резервный режим)")
+}
+
+data class ScanResult(
+    val certificates: List<CertInfo>,
+    val source: ScanSource,
+    val warning: String? = null
+)
 
 object TokenScanner {
-    fun scanAllTokens(): List<CertInfo> {
+    /**
+     * Основной путь — прямое чтение сертификатов с носителей по PKCS#11.
+     * Утилиты КриптоПро запускаются только если библиотека PKCS#11 недоступна
+     * или на носителях нет объектов-сертификатов.
+     */
+    fun scan(): ScanResult {
+        val pkcs11Result = runCatching { Pkcs11TokenScanner.scanAllTokens() }
+        val certificates = pkcs11Result.getOrNull()
 
-        val resultList = mutableListOf<CertInfo>()
-
-        // Теперь получаем LIST пар, где порядок строго сохранен!
-        val hardwareFuture = getHardwareSerials()
-
-        try {
-            val containers = ProcessBuilder(
-                "C:\\Program Files\\Crypto Pro\\CSP\\csptest.exe",
-                "-keyset", "-enum_cont", "-verifycontext", "-fqcn", "-machine"
-            ).start().inputStream.bufferedReader(charset("CP866")).readLines()
-                .filter { it.contains("\\\\.\\") }
-                .map { it.trim() }
-
-
-            // Создаем изменяемую копию списка, чтобы "вычеркивать" использованные серийники
-            val remainingHardware = hardwareFuture.toMutableList()
-
-            if (containers.isNotEmpty()) {
-                containers.forEach { path ->
-                    val readerName = path.substringAfter("\\\\.\\").substringBefore("\\").trim()
-                    // Универсальное извлечение ID контейнера из пути
-                    // Берем только имя контейнера (последнюю часть пути после слэша)
-                    val containerName = path.substringAfterLast("\\").trim()
-
-                    // Ищем сплошной кусок цифр длиной от 9 до 13 знаков в любом месте строки.
-                    // Если вдруг такого длинного числа нет, берем вообще любые первые попавшиеся цифры.
-                    val code = """\d{9,13}""".toRegex().find(containerName)?.value
-                        ?: """\d+""".toRegex().find(containerName)?.value
-                        ?: readerName // крайний случай, если цифр вообще нет
-
-                    // УМНЫЙ ПОИСК СЕРИЙНИКА:
-                    // Ищем в списке железа первую подходящую запись
-
-                    val matchIndex = remainingHardware.indexOfFirst { pair ->
-                        pair.first.contains(code, true) || code.contains(pair.first, true)
-                    }
-
-                    val realSerial = if (matchIndex != -1) {
-                        remainingHardware.removeAt(matchIndex).second
-                    } else if (remainingHardware.isNotEmpty()) {
-                        remainingHardware.removeAt(0).second
-                    } else {
-                        "ID не найден"
-                    }
-
-                    val info = fetchInfoDirectly(path)
-
-                    resultList.add(
-                        CertInfo(
-                            subject = info.subject,
-                            validFrom = info.validFrom,
-                            validTo = info.validTo,
-                            mailTo = info.mailTo,
-                            inn = info.inn,
-                            snils = info.snils,
-                            jobTitle = info.jobTitle,
-                            hardwareId = realSerial,
-                            containerPath = path
-                        )
-
-                    )
-
-                }
-
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return resultList
-    }
-    fun getHardwareSerials(): List<Pair<String, String>> {
-        val list = mutableListOf<Pair<String, String>>()
-        try {
-            val process = ProcessBuilder(
-                "certutil",
-                "-silent",
-                "-csp",
-                "Crypto-Pro GOST R 34.10-2012 Cryptographic Service Provider",
-                "-key"
-            ).start()
-            val regex = """rutoken(?:_ecp)?_([a-fA-F0-9]+)""".toRegex()
-            process.inputStream.bufferedReader(charset("CP866")).useLines { lines ->
-                var lastId = ""
-                lines.forEach { line ->
-                    val trimmedLine = line.trim()
-
-                    // Пытаемся вытащить ID из текущей строки
-                    val foundId = extractKeyIds(trimmedLine).firstOrNull()
-                    if (foundId != null) {
-                        lastId = foundId
-                    }
-
-                    if (line.contains("SCARD\\")) {
-                        regex.find(line)?.groupValues?.get(1)?.let { hex ->
-                            val code = hex.toLong(16).toString()
-                            if (lastId.isNotEmpty()) {
-                            // Добавляем в список как пару (Контейнер -> Железо)
-                                list.add(Pair(lastId, code))
-                                lastId = "" // Очищаем для следующего токена
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return list
-    }
-    fun fetchInfoDirectly(path: String): CertInfo {
-        var subject = "Неизвестно"
-        var validFrom = "Неизвестно"
-        var validTo = "Неизвестно"
-        var mailTo = "Неизвестно"
-        var inn = "Неизвестно"
-        var snils = "Неизвестно"
-        var jobTitle = "Неизвестно"
-
-        try {
-            val process =
-                ProcessBuilder("C:\\Program Files\\Crypto Pro\\CSP\\certmgr.exe", "-list", "-container", path).start()
-            process.inputStream.bufferedReader(charset("CP866")).useLines { lines ->
-                lines.forEach { line ->
-                    val l = line.trim()
-                    if (l.startsWith("Субъект")) {
-                        if (l.contains("CN=")) subject = l.substringAfter("CN=").substringBefore(",")
-                        if (l.contains("E=")) mailTo = l.substringAfter("E=").substringBefore(",")
-                        if (l.contains("ИНН=")) inn = l.substringAfter("ИНН=").substringBefore(",")
-                        if (l.contains("СНИЛС=")) snils = l.substringAfter("СНИЛС=").substringBefore(",")
-                        if (l.contains("T=")) jobTitle = l.substringAfter("T=").substringBefore(",")
-                    }
-
-                    if (l.startsWith("Выдан")) {
-                        val rawDateTime = l.substringAfter(":").substringBefore("UTC").trim()
-                        validFrom = rawDateTime.substringBefore(" ").replace("/", ".")
-                    }
-
-                    if (l.startsWith("Истекает")) {
-                        val rawDateTime = l.substringAfter(":").substringBefore("UTC").trim()
-                        validTo = rawDateTime.substringBefore(" ").replace("/", ".")
-                    }
-                }
-            }
-        } catch (e: Exception) {
+        if (!certificates.isNullOrEmpty()) {
+            return ScanResult(certificates, ScanSource.PKCS11)
         }
 
-        return CertInfo(subject, validFrom, validTo, mailTo, inn, snils, jobTitle)
+        val warning = pkcs11Result.exceptionOrNull()?.let {
+            "PKCS#11 недоступен (${Pkcs11TokenScanner.libraryLocation}): ${it.message}"
+        } ?: "На носителях нет объектов-сертификатов PKCS#11"
+
+        val fallback = CryptoProTokenScanner.scanAllTokens()
+        return if (fallback.isEmpty() && certificates != null) {
+            ScanResult(certificates, ScanSource.PKCS11, warning)
+        } else {
+            ScanResult(fallback, ScanSource.CRYPTO_PRO, warning)
+        }
     }
-    fun extractKeyIds(input: String): List<String> {
-        val regex = Regex("""\d{8,13}""")
-        return regex.findAll(input).map { it.value }.distinct().toList()
-    }
+
+    fun scanAllTokens(): List<CertInfo> = scan().certificates
 }
 
 @Composable
@@ -205,6 +73,8 @@ fun SkanToken() {
     val certs = remember { mutableStateListOf<CertInfo>() }
     val scope = rememberCoroutineScope()
     var isScanning by remember { mutableStateOf(false) }
+    var scanSource by remember { mutableStateOf<ScanSource?>(null) }
+    var scanWarning by remember { mutableStateOf<String?>(null) }
 
     // Состояние для всплывающего уведомления
     var successMessage by remember { mutableStateOf<String?>(null) }
@@ -226,6 +96,16 @@ fun SkanToken() {
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.Top
         ) {
+
+            scanWarning?.let { warning ->
+                Text(
+                    text = warning,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = EndfieldColors.TxtMuted,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                )
+            }
 
             if (certs.isEmpty()) {
                 // --- ЗАГЛУШКА С АНИМАЦИЕЙ ---
@@ -254,7 +134,11 @@ fun SkanToken() {
                             letterSpacing = 1.5.sp
                         )
                         Text(
-                            text = if (isScanning) "Парсинг вывода КриптоПро CSP..." else "Вставьте токен и запустите сканирование",
+                            text = if (isScanning) {
+                                "Чтение сертификатов по PKCS#11..."
+                            } else {
+                                "Вставьте токен и запустите сканирование"
+                            },
                             fontSize = 12.sp,
                             color = EndfieldColors.TxtMuted,
                             modifier = Modifier.padding(top = 4.dp)
@@ -262,6 +146,15 @@ fun SkanToken() {
                     }
                 }
             } else {
+                scanSource?.let { source ->
+                    Text(
+                        text = "ИСТОЧНИК ДАННЫХ: ${source.title}",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = EndfieldColors.GoldMuted,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
                 // --- СПИСОК НАЙДЕННЫХ ТОКЕНОВ ---
                 LazyColumn(modifier = Modifier.weight(1f)) {
                     items(certs) { cert ->
@@ -301,7 +194,7 @@ fun SkanToken() {
                                         colors = ButtonDefaults.buttonColors(containerColor = EndfieldColors.Gold),
                                         shape = CutCornerShape(bottomEnd = 6.dp)
                                     ) {
-                                        Text("ЗАПИСАТЬ В БАЗУ ДАННЫХ", color = EndfieldColors.Bg0, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                        Text("ЗАПИСАТЬ В БАЗУ ДАННЫХ", color = EndfieldColors.Bg0, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -317,10 +210,12 @@ fun SkanToken() {
                 scope.launch {
                     isScanning = true
                     certs.clear()
-                    val found = withContext(Dispatchers.IO) {
-                        TokenScanner.scanAllTokens()
+                    val result = withContext(Dispatchers.IO) {
+                        TokenScanner.scan()
                     }
-                    certs.addAll(found)
+                    certs.addAll(result.certificates)
+                    scanSource = result.source
+                    scanWarning = result.warning
                     isScanning = false
                 }
             },
@@ -358,7 +253,7 @@ fun SkanToken() {
                     text = if (isScanning) "СКАНИРОВАНИЕ..." else "ЗАПУСТИТЬ СКАНИРОВАНИЕ",
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -392,10 +287,10 @@ fun SkanToken() {
 
                     Text(
                         text = successMessage ?: "",
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp,
                         color = EndfieldColors.White,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        textAlign = TextAlign.Center,
                         letterSpacing = 1.sp
                     )
 
@@ -403,7 +298,7 @@ fun SkanToken() {
 
                     Text(
                         text = "STATUS: COMPLETE_WRITE",
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontFamily = FontFamily.Monospace,
                         fontSize = 10.sp,
                         color = EndfieldColors.Gold
                     )
