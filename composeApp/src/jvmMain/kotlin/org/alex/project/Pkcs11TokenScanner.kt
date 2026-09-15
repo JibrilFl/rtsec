@@ -31,7 +31,7 @@ object Pkcs11TokenScanner {
     private const val LIBRARY_ENV = "RUTOKEN_PKCS11_LIBRARY"
     private val CONFIG_FILES = listOf("rutoken.cfg", "rutoken_dynamic.cfg")
 
-    private val pkcs11: RtPkcs11 by lazy { Native.load(libraryName(), RtPkcs11::class.java) }
+    internal val pkcs11: RtPkcs11 by lazy { Native.load(libraryName(), RtPkcs11::class.java) }
 
     val libraryLocation: String get() = libraryName()
 
@@ -83,13 +83,13 @@ object Pkcs11TokenScanner {
         return serial.toLongOrNull(16)?.toString() ?: serial
     }
 
-    private fun slotList(): List<NativeLong> {
+    internal fun slotList(tokenPresent: Byte = CK_TRUE): List<NativeLong> {
         val slotCount = NativeLongByReference()
-        checkRv("C_GetSlotList", pkcs11.C_GetSlotList(CK_TRUE, null, slotCount))
+        checkRv("C_GetSlotList", pkcs11.C_GetSlotList(tokenPresent, null, slotCount))
         if (slotCount.value.toInt() == 0) return emptyList()
 
         val slots = Array(slotCount.value.toInt()) { NativeLong(0) }
-        checkRv("C_GetSlotList", pkcs11.C_GetSlotList(CK_TRUE, slots, slotCount))
+        checkRv("C_GetSlotList", pkcs11.C_GetSlotList(tokenPresent, slots, slotCount))
         return slots.take(slotCount.value.toInt())
     }
 
@@ -146,7 +146,7 @@ object Pkcs11TokenScanner {
         ?.replace("\\\\", "\\")
         ?.takeIf { it.isNotEmpty() }
 
-    private fun checkRv(function: String, rv: NativeLong) {
+    internal fun checkRv(function: String, rv: NativeLong) {
         if (!equalsPkcsRV(CKR_OK, rv)) {
             throw Pkcs11ScanException("$function failed, code 0x${java.lang.Long.toHexString(rv.toLong())}")
         }

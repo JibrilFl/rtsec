@@ -37,6 +37,18 @@ kotlin {
 }
 
 
+/** Диагностика содержимого токенов: ./gradlew :composeApp:pkcs11Diagnostics --console=plain */
+tasks.register<JavaExec>("pkcs11Diagnostics") {
+    group = "verification"
+    description = "Выводит слоты, CK_TOKEN_INFO и список объектов PKCS#11 подключённых токенов"
+    val jvmMain = kotlin.jvm().compilations.getByName("main")
+    dependsOn(jvmMain.compileTaskProvider)
+    classpath = files(jvmMain.output.allOutputs, jvmMain.runtimeDependencyFiles)
+    mainClass = "org.alex.project.Pkcs11DiagnosticsKt"
+    standardInput = System.`in`
+    (project.findProperty("rutokenLibrary") as String?)?.let { systemProperty("rutoken.pkcs11.library", it) }
+}
+
 compose.desktop {
     application {
         mainClass = "org.alex.project.MainKt"
